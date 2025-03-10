@@ -1,5 +1,6 @@
 import pyshark
 import binascii
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, FrozenSet
 
@@ -37,9 +38,8 @@ class PacketData:
     # MMS specific data
     mms_data: Dict = field(default_factory=dict)
     
-    # LLN0$ and CircuitBreaker tracking
-    lln0_requests: List[Dict] = field(default_factory=list)
-    circuit_breaker_requests: List[Dict] = field(default_factory=list)
+    # Variable tracking
+    lln0_variables: Dict[str, Dict] = field(default_factory=dict)
 
 def analyze_packet(packet) -> tuple[frozenset, PacketData]:
     try:
@@ -120,10 +120,9 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
         # Extract MMS data if available
         extract_mms_data(packet, packet_data)
         
-        # Check for LLN0$ and CircuitBreaker references
-        check_for_lln0_references(packet, packet_data)
-        check_for_circuit_breaker_references(packet, packet_data)
-                    
+        # Extract LLN0$ variables
+        extract_lln0_variables(packet, packet_data)
+
         print(f"Packet Number: {packet_data.packet_number}")
         print(f"Timestamp: {packet_data.timestamp}")    
         print(f"Source IP: {packet_data.src_ip}")
@@ -181,21 +180,16 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
         if packet_data.mms_data:
             print("\nMMS Data Fields:")
             for key, value in packet_data.mms_data.items():
-                print(f"  {key}: {value}")
+                if "pdu_element" in key:
+                    print(f"  {key}: {value}")
         
-        # Print LLN0$ references if found
-        if packet_data.lln0_requests:
-            print("\nLLN0$ References:")
-            for ref in packet_data.lln0_requests:
-                print(f"  Field: {ref['field']}")
-                print(f"  Value: {ref['value']}")
-        
-        # Print CircuitBreaker references if found
-        if packet_data.circuit_breaker_requests:
-            print("\nCircuitBreaker References:")
-            for ref in packet_data.circuit_breaker_requests:
-                print(f"  Field: {ref['field']}")
-                print(f"  Value: {ref['value']}")
+        # Print LLN0$ variables if found
+        if packet_data.lln0_variables:
+            print("\nLLN0$ Variables:")
+            for var_name, details in packet_data.lln0_variables.items():
+                print(f"  Variable: {var_name}")
+                for key, value in details.items():
+                    print(f"    {key}: {value}")
             
         print("="*80)
         
@@ -234,11 +228,15 @@ def extract_mms_data(packet, packet_data):
         
         packet_data.mms_data = mms_fields
 
-def check_for_lln0_references(packet, packet_data):
-    """Check for LLN0$ references in the packet"""
+def extract_lln0_variables(packet, packet_data):
+    """Extract all variables following LLN0$ pattern"""
     
-    # Check in all layers for LLN0$ references
+    # Regular expression to find LLN0$ followed by any characters
+    lln0_pattern = re.compile(r'LLN0\$([a-zA-Z0-9_]+)')
+    
+    # Check in all layers for LLN0$ variables
     for layer_name in dir(packet):
+        print(f"Layer Name: {layer_name}")
         if layer_name.startswith('_'):
             continue
         
@@ -251,60 +249,49 @@ def check_for_lln0_references(packet, packet_data):
                 
                 try:
                     value = getattr(layer, field_name)
-                    if isinstance(value, str) and "LLN0$" in value:
-                        packet_data.lln0_requests.append({
-                            "layer": layer_name,
-                            "field": field_name,
-                            "value": value
-                        })
+                    if isinstance(value, str):
+                        # Find all LLN0$ variables in the string
+                        matches = lln0_pattern.findall(value)
+                        for variable in matches:
+                            if variable not in packet_data.lln0_variables:
+                                packet_data.lln0_variables[variable] = {}
+                            
+                            packet_data.lln0_variables[variable].update({
+                                "layer": layer_name,
+                                "field": field_name,
+                                "context": value
+                            })
                 except Exception:
+                    print(f"1: Error extracting LLN0$ variables from {layer_name}.{field_name}")
                     pass
         except Exception:
+            print(f"2: Error extracting LLN0$ variables from {layer_name}")
             pass
     
     # Also check in raw payload if available
-    if packet_data.raw_payload and b"LLN0$" in packet_data.raw_payload:
-        packet_data.lln0_requests.append({
-            "layer": "raw_payload",
-            "field": "payload",
-            "value": "Found in raw payload data"
-        })
-
-def check_for_circuit_breaker_references(packet, packet_data):
-    """Check for CircuitBreaker references in the packet"""
-    
-    # Check in all layers for CircuitBreaker references
-    for layer_name in dir(packet):
-        if layer_name.startswith('_'):
-            continue
-        
+    if packet_data.raw_payload:
         try:
-            layer = getattr(packet, layer_name)
+            # Convert bytes to string for regex matching
+            payload_str = packet_data.raw_payload.decode('utf-8', errors='ignore')
+            matches = lln0_pattern.findall(payload_str)
             
-            for field_name in dir(layer):
-                if field_name.startswith('_') or callable(getattr(layer, field_name)):
-                    continue
+            for variable in matches:
+                if variable not in packet_data.lln0_variables:
+                    packet_data.lln0_variables[variable] = {}
                 
-                try:
-                    value = getattr(layer, field_name)
-                    if isinstance(value, str) and "CircuitBreaker" in value:
-                        packet_data.circuit_breaker_requests.append({
-                            "layer": layer_name,
-                            "field": field_name,
-                            "value": value
-                        })
-                except Exception:
-                    pass
+                # Find the context (20 chars before and after the match)
+                start_pos = payload_str.find(f"LLN0${variable}")
+                context_start = max(0, start_pos - 20)
+                context_end = min(len(payload_str), start_pos + len(variable) + 25)
+                context = payload_str[context_start:context_end]
+                
+                packet_data.lln0_variables[variable].update({
+                    "layer": "raw_payload",
+                    "offset": start_pos,
+                    "context": context
+                })
         except Exception:
             pass
-    
-    # Also check in raw payload if available
-    if packet_data.raw_payload and b"CircuitBreaker" in packet_data.raw_payload:
-        packet_data.circuit_breaker_requests.append({
-            "layer": "raw_payload",
-            "field": "payload",
-            "value": "Found in raw payload data"
-        })
 
 def analyze_pcap_file(pcap_file):
     """Process a pcap file and track MMS packets"""
@@ -312,8 +299,12 @@ def analyze_pcap_file(pcap_file):
     capture = pyshark.FileCapture(pcap_file, display_filter='mms')
     
     connections = {}  # To store connection data
-    
+    all_lln0_variables = {}  # To store all LLN0$ variables found
+    counter = 0
     for packet in capture:
+        if counter > 100:
+            break
+        counter += 1
         result = analyze_packet(packet)
         if result:
             conn_key, packet_data = result
@@ -321,6 +312,17 @@ def analyze_pcap_file(pcap_file):
                 if conn_key not in connections:
                     connections[conn_key] = []
                 connections[conn_key].append(packet_data)
+                
+                # Collect all LLN0$ variables
+                for var_name, details in packet_data.lln0_variables.items():
+                    if var_name not in all_lln0_variables:
+                        all_lln0_variables[var_name] = []
+                    
+                    # Add packet reference
+                    var_details = details.copy()
+                    var_details["packet_number"] = packet_data.packet_number
+                    var_details["timestamp"] = packet_data.timestamp
+                    all_lln0_variables[var_name].append(var_details)
     
     # Print summary of connections
     print("\nConnection Summary:")
@@ -328,16 +330,22 @@ def analyze_pcap_file(pcap_file):
         print(f"Connection: {' <-> '.join(conn_key)}")
         print(f"Total packets: {len(packets)}")
         
-        # Count LLN0$ and CircuitBreaker operations
-        lln0_count = sum(1 for p in packets if p.lln0_requests)
-        cb_count = sum(1 for p in packets if p.circuit_breaker_requests)
+        # Count LLN0$ variables
+        lln0_vars = set()
+        for p in packets:
+            lln0_vars.update(p.lln0_variables.keys())
         
-        if lln0_count > 0:
-            print(f"LLN0$ references: {lln0_count} packets")
+        if lln0_vars:
+            print(f"LLN0$ variables: {', '.join(lln0_vars)}")
         
-        if cb_count > 0:
-            print(f"CircuitBreaker references: {cb_count} packets")
-        
+        print("-" * 40)
+    
+    # Print summary of all LLN0$ variables
+    print("\nLLN0$ Variable Summary:")
+    for var_name, occurrences in all_lln0_variables.items():
+        print(f"Variable: LLN0${var_name}")
+        print(f"Occurrences: {len(occurrences)}")
+        print(f"First seen: Packet #{occurrences[0]['packet_number']} at {occurrences[0]['timestamp']}")
         print("-" * 40)
 
 if __name__ == "__main__":
