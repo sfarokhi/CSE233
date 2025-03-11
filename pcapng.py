@@ -37,7 +37,7 @@ class PacketData:
     
     # MMS specific data
     mms_message_type: str = None
-    mms_data: Dict = field(default_factory=dict)
+    mms_data_values: dict = field(default_factory=dict)
     
     # Variable tracking
     lln0_variables: Dict[str, Dict] = field(default_factory=dict)
@@ -188,15 +188,14 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                         print(f"MMS Packet Type: Request")
         
         # Extract LLN0$ variables
-        extract_lln0_variables(packet, packet_data)
+        extract_mms_data(packet, packet_data)
         
-        # Print LLN0$ variables if found
-        if packet_data.lln0_variables:
-            print("\nLLN0$ Variables:")
-            for var_name, details in packet_data.lln0_variables.items():
-                print(f"  Variable: {var_name}")
-                for key, value in details.items():
-                    print(f"    {key}: {value}")
+        """
+            NEED TO START HERE:
+            Extract LLN0$ variables FROM mms.identifier for directory (All Values)
+            Extract LLN0$ variables FROM mms.itemid for data values (All Values)
+        """
+
                     
         # Create connection identifiers - both directions
         forward_key = frozenset([
@@ -210,80 +209,103 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
         print(f"Error analyzing packet: {str(e)}")
         return None, None
 
+def parse_layer_fields_container(field_container):
+    """
+    Recursively parses a LayerFieldsContainer and returns a structured dictionary.
+    """
+    if not isinstance(field_container, pyshark.packet.fields.LayerFieldsContainer):
+        return None  # Ensure we only parse valid LayerFieldsContainer objects
+
+    parsed_data = {}
+
+    # Extract key attributes
+    parsed_data["default_value"] = field_container.get_default_value()
+    parsed_data["all_values"] = field_container.all_fields  # List of all values
+    parsed_data["show_name"] = getattr(field_container, 'showname', None)
+
+    # Handle nested fields recursively if applicable
+    if hasattr(field_container, 'field_names'):
+        nested_fields = {}
+        for field_name in field_container.field_names:
+            nested_field = getattr(field_container, field_name, None)
+            if isinstance(nested_field, pyshark.packet.fields.LayerFieldsContainer):
+                nested_fields[field_name] = parse_layer_fields_container(nested_field)  # Recursive parsing
+            else:
+                nested_fields[field_name] = nested_field  # Directly store simple values
+
+        parsed_data["nested_fields"] = nested_fields if nested_fields else None
+
+    return parsed_data
+
 def extract_mms_data(packet, packet_data):
-    """Extract all available MMS data fields from the packet"""
+    """
+    There are four different packet types:
+        GetServerDirectoryRequest
+        GetServerDirectoryResponse
+        GetDataValuesRequest
+        GetDataValuesResponse
+    Requests will always have a single itemid and domainid
+    Responses will either have:
+        DirectoryResponse: A list of listOfAccessResult items
+        DataValuesResponse: 
+    """
     if hasattr(packet, 'mms'):
         mms_layer = packet.mms
         
         # Extract all fields from the MMS layer
         mms_fields = {}
+        print("+++++++++++++++++++++++++")
         
-        # Get all available MMS fields
-        for field_name in dir(mms_layer):
-            # Skip internal/private attributes
-            if field_name.startswith('_') or field_name in ['get_field', 'get_field_value', 'layer_name', 'pretty_print']:
-                continue
-            
+        for field_name in getattr(mms_layer, 'field_names', []):
             try:
-                value = getattr(mms_layer, field_name)
-                if value and not callable(value):
-                    mms_fields[field_name] = value
-            except Exception:
-                pass
+                field_value = getattr(mms_layer, field_name, None)
+
+                if isinstance(field_value, pyshark.packet.fields.LayerFieldsContainer):
+                    # print(f"Parsing LayerFieldsContainer: {field_name}")
+                    mms_fields[field_name] = parse_layer_fields_container(field_value)
+                else:
+                    mms_fields[field_name] = field_value  # Store non-container values directly
+
+            except Exception as e:
+                print(f"Error processing {field_name}: {e}")
         
         packet_data.mms_data = mms_fields
-
-def extract_lln0_variables(packet, packet_data):
-    """Extract all variables following LLN0$ pattern"""
-    
-    # Regular expression to find LLN0$ followed by any characters
-    lln0_pattern = re.compile(r'LLN0\$([a-zA-Z0-9_]+)')
-    
-    # Check in the MMS layer for LLN0$ variables
-    layer = packet_data.mms_data
-    print(layer)
-    layer_name = "mms_data"
-    
-    # Find all LLN0$ variables in the string
-    matches = lln0_pattern.findall(layer)
-    for variable in matches:
-        if variable not in packet_data.lln0_variables:
-            packet_data.lln0_variables[variable] = {}
+        print_mms_fields(mms_fields, indent=4)
         
-        packet_data.lln0_variables[variable].update({
-            "key": variable,
-            "value": None
-        })
 
-    # # Also check in raw payload if available
-    # if packet_data.raw_payload:
-    #     try:
-    #         # Convert bytes to string for regex matching
-    #         payload_str = packet_data.raw_payload.decode('utf-8', errors='ignore')
-    #         matches = lln0_pattern.findall(payload_str)
-            
-    #         for variable in matches:
-    #             if variable not in packet_data.lln0_variables:
-    #                 packet_data.lln0_variables[variable] = {}
-                
-    #             # Find the context (20 chars before and after the match)
-    #             start_pos = payload_str.find(f"LLN0${variable}") - 1
-    #             context_start = max(0, start_pos - 20)
-    #             context_end = min(len(payload_str), start_pos + len(variable) + 25)
-    #             context = payload_str[context_start:context_end]
-                
-    #             packet_data.lln0_variables[variable].update({
-    #                 "layer": "raw_payload",
-    #                 "offset": start_pos,
-    #                 "context": context
-    #             })
-    #     except Exception:
-    #         pass
+def print_mms_fields(mms_fields, indent=0):
+    """
+    Recursively prints the structured MMS fields in a readable format.
+    """
+    indent_space = "    " * indent  # Indentation for readability
+
+    for key, value in mms_fields.items():
+        print(f"{indent_space}📌 {key}:")
+        
+        # Print main attributes
+        print(f"{indent_space}    🔹 Default Value: {value.get('default_value', 'N/A')}")
+        print(f"{indent_space}    🔹 Show Name: {value.get('show_name', 'N/A')}")
+        
+        # Print all values if available
+        all_values = value.get("all_values", [])
+        if all_values:
+            print(f"{indent_space}    🔹 All Values:")
+            for field in all_values:
+                print(f"{indent_space}        - {field}")
+
+        # Print nested fields (if any)
+        nested_fields = value.get("nested_fields")
+        if nested_fields:
+            print(f"{indent_space}    🔹 Nested Fields:")
+            print_mms_fields(nested_fields, indent + 1)
+
+
 
 def analyze_pcap_file(pcap_file):
     """Process a pcap file and track MMS packets"""
     # Open the pcap file with pyshark
-    capture = pyshark.FileCapture(pcap_file, display_filter='mms')
+    display_filter = 'mms or frame.number == 10017 or frame.number == 10018 or frame.number == 12548 or frame.number == 12549'
+    capture = pyshark.FileCapture(pcap_file, display_filter=display_filter)
     
     connections = {}  # To store connection data
     all_lln0_variables = {}  # To store all LLN0$ variables found
@@ -317,23 +339,23 @@ def analyze_pcap_file(pcap_file):
         print(f"Connection: {' <-> '.join(conn_key)}")
         print(f"Total packets: {len(packets)}")
         
-        # Count LLN0$ variables
-        lln0_vars = set()
-        for p in packets:
-            lln0_vars.update(p.lln0_variables.keys())
+    #     # Count LLN0$ variables
+    #     lln0_vars = set()
+    #     for p in packets:
+    #         lln0_vars.update(p.lln0_variables.keys())
         
-        if lln0_vars:
-            print(f"LLN0$ variables: {', '.join(lln0_vars)}")
+    #     if lln0_vars:
+    #         print(f"LLN0$ variables: {', '.join(lln0_vars)}")
         
-        print("-" * 40)
+    #     print("-" * 40)
     
-    # Print summary of all LLN0$ variables
-    print("\nLLN0$ Variable Summary:")
-    for var_name, occurrences in all_lln0_variables.items():
-        print(f"Variable: LLN0${var_name}")
-        print(f"Occurrences: {len(occurrences)}")
-        print(f"First seen: Packet #{occurrences[0]['packet_number']} at {occurrences[0]['timestamp']}")
-        print("-" * 40)
+    # # Print summary of all LLN0$ variables
+    # print("\nLLN0$ Variable Summary:")
+    # for var_name, occurrences in all_lln0_variables.items():
+    #     print(f"Variable: LLN0${var_name}")
+    #     print(f"Occurrences: {len(occurrences)}")
+    #     print(f"First seen: Packet #{occurrences[0]['packet_number']} at {occurrences[0]['timestamp']}")
+    #     print("-" * 40)
 
 if __name__ == "__main__":
     import sys
