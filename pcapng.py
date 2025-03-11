@@ -36,6 +36,7 @@ class PacketData:
     cotp_pdu_type: int = None
     
     # MMS specific data
+    mms_message_type: str = None
     mms_data: Dict = field(default_factory=dict)
     
     # Variable tracking
@@ -116,13 +117,7 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                                 
                                 if len(raw_payload) >= 6:
                                     packet_data.cotp_pdu_type = raw_payload[5] & 0x0F
-        
-        # Extract MMS data if available
-        extract_mms_data(packet, packet_data)
-        
-        # Extract LLN0$ variables
-        extract_lln0_variables(packet, packet_data)
-
+        print("="*80)
         print(f"Packet Number: {packet_data.packet_number}")
         print(f"Timestamp: {packet_data.timestamp}")    
         print(f"Source IP: {packet_data.src_ip}")
@@ -176,12 +171,24 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                             if cotp_pdu_type == 0x04 and len(raw_payload) > iso_offset:
                                 print("  ISO 8650/MMS Data Present")
         
+        # Extract MMS data if available
+        extract_mms_data(packet, packet_data)
+        
         # Print MMS data if available
         if packet_data.mms_data:
             print("\nMMS Data Fields:")
             for key, value in packet_data.mms_data.items():
                 if "pdu_element" in key:
-                    print(f"  {key}: {value}")
+                    
+                    if "response" in key:
+                        packet_data.mms_message_type = "Response"
+                        print(f"MMS Packet Type: Response")
+                    elif "request" in key:
+                        packet_data.mms_message_type = "Request"
+                        print(f"MMS Packet Type: Request")
+        
+        # Extract LLN0$ variables
+        extract_lln0_variables(packet, packet_data)
         
         # Print LLN0$ variables if found
         if packet_data.lln0_variables:
@@ -190,9 +197,7 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                 print(f"  Variable: {var_name}")
                 for key, value in details.items():
                     print(f"    {key}: {value}")
-            
-        print("="*80)
-        
+                    
         # Create connection identifiers - both directions
         forward_key = frozenset([
             f"src={packet_data.src_ip}:{packet_data.src_port}",
@@ -234,64 +239,46 @@ def extract_lln0_variables(packet, packet_data):
     # Regular expression to find LLN0$ followed by any characters
     lln0_pattern = re.compile(r'LLN0\$([a-zA-Z0-9_]+)')
     
-    # Check in all layers for LLN0$ variables
-    for layer_name in dir(packet):
-        print(f"Layer Name: {layer_name}")
-        if layer_name.startswith('_'):
-            continue
-        
-        try:
-            layer = getattr(packet, layer_name)
-            
-            for field_name in dir(layer):
-                if field_name.startswith('_') or callable(getattr(layer, field_name)):
-                    continue
-                
-                try:
-                    value = getattr(layer, field_name)
-                    if isinstance(value, str):
-                        # Find all LLN0$ variables in the string
-                        matches = lln0_pattern.findall(value)
-                        for variable in matches:
-                            if variable not in packet_data.lln0_variables:
-                                packet_data.lln0_variables[variable] = {}
-                            
-                            packet_data.lln0_variables[variable].update({
-                                "layer": layer_name,
-                                "field": field_name,
-                                "context": value
-                            })
-                except Exception:
-                    print(f"1: Error extracting LLN0$ variables from {layer_name}.{field_name}")
-                    pass
-        except Exception:
-            print(f"2: Error extracting LLN0$ variables from {layer_name}")
-            pass
+    # Check in the MMS layer for LLN0$ variables
+    layer = packet_data.mms_data
+    print(layer)
+    layer_name = "mms_data"
     
-    # Also check in raw payload if available
-    if packet_data.raw_payload:
-        try:
-            # Convert bytes to string for regex matching
-            payload_str = packet_data.raw_payload.decode('utf-8', errors='ignore')
-            matches = lln0_pattern.findall(payload_str)
+    # Find all LLN0$ variables in the string
+    matches = lln0_pattern.findall(layer)
+    for variable in matches:
+        if variable not in packet_data.lln0_variables:
+            packet_data.lln0_variables[variable] = {}
+        
+        packet_data.lln0_variables[variable].update({
+            "key": variable,
+            "value": None
+        })
+
+    # # Also check in raw payload if available
+    # if packet_data.raw_payload:
+    #     try:
+    #         # Convert bytes to string for regex matching
+    #         payload_str = packet_data.raw_payload.decode('utf-8', errors='ignore')
+    #         matches = lln0_pattern.findall(payload_str)
             
-            for variable in matches:
-                if variable not in packet_data.lln0_variables:
-                    packet_data.lln0_variables[variable] = {}
+    #         for variable in matches:
+    #             if variable not in packet_data.lln0_variables:
+    #                 packet_data.lln0_variables[variable] = {}
                 
-                # Find the context (20 chars before and after the match)
-                start_pos = payload_str.find(f"LLN0${variable}")
-                context_start = max(0, start_pos - 20)
-                context_end = min(len(payload_str), start_pos + len(variable) + 25)
-                context = payload_str[context_start:context_end]
+    #             # Find the context (20 chars before and after the match)
+    #             start_pos = payload_str.find(f"LLN0${variable}") - 1
+    #             context_start = max(0, start_pos - 20)
+    #             context_end = min(len(payload_str), start_pos + len(variable) + 25)
+    #             context = payload_str[context_start:context_end]
                 
-                packet_data.lln0_variables[variable].update({
-                    "layer": "raw_payload",
-                    "offset": start_pos,
-                    "context": context
-                })
-        except Exception:
-            pass
+    #             packet_data.lln0_variables[variable].update({
+    #                 "layer": "raw_payload",
+    #                 "offset": start_pos,
+    #                 "context": context
+    #             })
+    #     except Exception:
+    #         pass
 
 def analyze_pcap_file(pcap_file):
     """Process a pcap file and track MMS packets"""
@@ -302,7 +289,7 @@ def analyze_pcap_file(pcap_file):
     all_lln0_variables = {}  # To store all LLN0$ variables found
     counter = 0
     for packet in capture:
-        if counter > 100:
+        if counter > 10:
             break
         counter += 1
         result = analyze_packet(packet)
