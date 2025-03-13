@@ -275,7 +275,7 @@ def plot_packet_data(packet_data_list: List[Any],
                     try:
                         x_value = datetime.strptime(x_value, "%Y-%m-%d %H:%M:%S")
                     except ValueError:
-                        # print(f"Could not parse timestamp: {x_value}")
+                        print(f"Could not parse timestamp: {x_value}")
                         continue
             
             data.append({
@@ -284,7 +284,7 @@ def plot_packet_data(packet_data_list: List[Any],
                 'color_value': color_value
             })
         except (AttributeError, ValueError, TypeError) as e:
-            # print(f"Error processing packet {getattr(packet, 'packet_number', '?')}: {e}")
+            print(f"Error processing packet {getattr(packet, 'packet_number', '?')}: {e}")
             pass
     
     # Create DataFrame
@@ -410,19 +410,19 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                                 
                                 if len(raw_payload) >= 6:
                                     packet_data.cotp_pdu_type = raw_payload[5] & 0x0F
-        # print("="*80)
-        # print(f"Packet Number: {packet_data.packet_number}")
-        # print(f"Timestamp: {packet_data.timestamp}")    
-        # print(f"Source IP: {packet_data.src_ip}")
-        # print(f"Destination IP: {packet_data.dst_ip}")
-        # print(f"IP Protocol: {packet_data.ip_proto}")
-        # print(f"IP TTL: {packet_data.ip_ttl}")
-        # print(f"IP ID: {packet_data.ip_id}")    
+        print("="*80)
+        print(f"Packet Number: {packet_data.packet_number}")
+        print(f"Timestamp: {packet_data.timestamp}")    
+        print(f"Source IP: {packet_data.src_ip}")
+        print(f"Destination IP: {packet_data.dst_ip}")
+        print(f"IP Protocol: {packet_data.ip_proto}")
+        print(f"IP TTL: {packet_data.ip_ttl}")
+        print(f"IP ID: {packet_data.ip_id}")    
         
         if packet_data.raw_payload:
-            # print("\nTCP Payload Data:")
-            # print(f"Payload Length: {packet_data.payload_length} bytes")
-            # print("Payload Hex:")
+            print("\nTCP Payload Data:")
+            print(f"Payload Length: {packet_data.payload_length} bytes")
+            print("Payload Hex:")
             
             # Print payload in hexdump format
             raw_payload = packet_data.raw_payload
@@ -430,25 +430,26 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
                 chunk = raw_payload[i:i+16]
                 hex_values = ' '.join(f'{b:02x}' for b in chunk)
                 ascii_values = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                # print(f"  {i:04x}: {hex_values:<48}  |{ascii_values}|")
+                print(f"  {i:04x}: {hex_values:<48}  |{ascii_values}|")
         
         # Extract MMS data if available
         extract_mms_data(packet, packet_data)
+        print_mms_fields(packet_data.mms_data, indent=2)
 
         # Print MMS data if available
         if packet_data.mms_data:
             
-            # print("\nMMS Data Fields:")
+            print("\nMMS Data Fields:")
             
             if 'confirmed_responsepdu_element' in packet_data.mms_data:
                 packet_data.mms_message_type = "Response"
-                # print(f"MMS Packet Type: Response")
+                print(f"MMS Packet Type: Response")
 
             elif 'confirmed_requestpdu_element' in packet_data.mms_data:
                 packet_data.mms_message_type = "Request"
-                # print(f"MMS Packet Type: Request")
+                print(f"MMS Packet Type: Request")
             else:
-                # print(f"MMS Packet Type: Unknown")
+                print(f"MMS Packet Type: Unknown")
                 pass
 
             # Request
@@ -474,13 +475,13 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
 
                     packet_data.mms_data_values = items
 
-        # print(f"MMS Domain: {packet_data.mms_domain}")
-        # print(f"MMS Data Values: {packet_data.mms_data_values}")
+        print(f"MMS Domain: {packet_data.mms_domain}")
+        print(f"MMS Data Values: {packet_data.mms_data_values}")
 
         return packet_data
 
     except Exception as e:
-        # print(f"Error analyzing packet: {str(e)}")
+        print(f"Error analyzing packet: {str(e)}")
         return None, None
 
 def parse_layer_fields_container(field_container):
@@ -544,13 +545,13 @@ def extract_mms_data(packet, packet_data):
                 field_value = getattr(mms_layer, field_name, None)
 
                 if isinstance(field_value, pyshark.packet.fields.LayerFieldsContainer):
-                    # # print(f"Parsing LayerFieldsContainer: {field_name}")
+                    # print(f"Parsing LayerFieldsContainer: {field_name}")
                     mms_fields[field_name] = parse_layer_fields_container(field_value)
                 else:
                     mms_fields[field_name] = field_value  # Store non-container values directly
 
             except Exception as e:
-                # print(f"Error processing {field_name}: {e}")
+                print(f"Error processing {field_name}: {e}")
                 pass
         
         packet_data.mms_data = mms_fields
@@ -612,7 +613,7 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        # print("Usage: python script.py <pcap_file>")
+        print("Usage: python script.py <pcap_file>")
         sys.exit(1)
     
     pcap_file = sys.argv[1]
