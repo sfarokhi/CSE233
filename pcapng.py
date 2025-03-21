@@ -9,6 +9,8 @@ import matplotlib.patches as mpatches
 from datetime import datetime
 from collections import Counter, defaultdict
 import pandas as pd
+from scapy.all import Ether, IP, TCP, Raw, rdpcap, wrpcap, send
+from scapy.packet import Packet
 from typing import Dict, List, Optional, Set, Tuple, Any, Callable
 
 @dataclass  
@@ -434,7 +436,7 @@ def analyze_packet(packet) -> tuple[frozenset, PacketData]:
         
         # Extract MMS data if available
         extract_mms_data(packet, packet_data)
-        print_mms_fields(packet_data.mms_data, indent=2)
+        # print_mms_fields(packet_data.mms_data, indent=2)
 
         # Print MMS data if available
         if packet_data.mms_data:
@@ -586,29 +588,21 @@ def print_mms_fields(mms_fields, indent=0):
 def analyze_pcap_file(pcap_file):
     """Process a pcap file and track MMS packets"""
     # Open the pcap file with pyshark
-    display_filter = 'mms'
+    # NOTE: change the display filter to just 'mms' to capture all mms packets instead of the four samples
+    display_filter = 'mms and (frame.number == 10017 or frame.number == 10038 or frame.number == 11487 or frame.number == 11510)'
     capture = pyshark.FileCapture(pcap_file, display_filter=display_filter)
+
+    scapy_packets = rdpcap(pcap_file)
     
     data = []  # To store connection data
     for packet in capture:
         packet_data = analyze_packet(packet)
         if packet_data:
             data.append(packet_data)
+
+    capture.close()
+    return data
         
-    # fig, ax = plot_packet_data(
-    #     data,
-    #     x_attr='timestamp',
-    #     y_attr='payload_length',  # Plot TPKT length instead
-    #     color_attr='src_ip',   # Group by source IP instead of message type
-    #     x_label='Time',
-    #     y_label='Payload Length',
-    #     title='MMS Packet Payload Length Over Time (Grouped by Source IP)',
-    # )
-    # plt.savefig('payload_length_vs_time.png')
-
-    # fig, ax = data_values_vs_payload_length(data)
-    # plt.savefig('data_values_vs_payload_length.png')
-
 if __name__ == "__main__":
     import sys
     
@@ -617,4 +611,4 @@ if __name__ == "__main__":
         sys.exit(1)
     
     pcap_file = sys.argv[1]
-    analyze_pcap_file(pcap_file)
+    packets = analyze_pcap_file(pcap_file)
